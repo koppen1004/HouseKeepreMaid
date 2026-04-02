@@ -263,25 +263,12 @@ async def create_reminder(message, content, sheet):
 
 
 async def handle_list(message, sheet):
-    values = await asyncio.to_thread(sheet.get_all_values)
-    print("=== RAW VALUES ===", flush=True)
-    for row in values:
-        print(row, flush=True)
-
     records = await get_records_async(sheet)
-    channel_id = str(message.channel.id)
 
-    print("=== ALL RECORDS ===", flush=True)
-    for r in records:
-        print(r, flush=True)
-
-    print("CURRENT CHANNEL ID:", channel_id, flush=True)
-
-    filtered = [r for r in records if r.get("channel_id") == channel_id]
-
-    print("=== FILTERED RECORDS ===", flush=True)
-    for r in filtered:
-        print(r, flush=True)
+    filtered = [
+        r for r in records
+        if str(r.get("channel_id")) == str(message.channel.id)
+    ]
 
     embed = build_reminder_embed(filtered)
     await message.channel.send(embed=embed)
