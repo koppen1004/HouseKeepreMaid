@@ -16,15 +16,21 @@ from reminder import handle_reminder_message
 
 
 # ===== Google Sheets設定 =====
+import os
+import json
+
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
 
-creds = ServiceAccountCredentials.from_json_keyfile_name(
-    "credentials.json",
+creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+
+creds = ServiceAccountCredentials.from_json_keyfile_dict(
+    creds_dict,
     scope
 )
+
 client_gs = gspread.authorize(creds)
 
 sheet = client_gs.open("Shopping_List").sheet1
