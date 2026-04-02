@@ -320,6 +320,8 @@ async def handle_delete(message, content, sheet):
 
 
 async def handle_reminder_message(message, content, sheet):
+    print(f"HNADLE_REMINDER_MESSAGE:{content}",flush=True)
+
     if content in ["テスト", "確認", "リマインダー確認"]:
         await message.channel.send("こちらはリマインダー用チャンネルですわ。")
         return True

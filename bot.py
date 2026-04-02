@@ -216,13 +216,20 @@ async def on_message(message):
     content = message.content.strip()
     channel_id = message.channel.id
 
+    print(f"ON_MESSAGE: channel={channel_id} content={content}", flush=True)
+
     if is_shopping_channel(channel_id):
         handled = await handle_shopping_message(message, content, shopping_sheet)
         if handled:
             return
 
     elif is_reminder_channel(channel_id):
+        print("REMINDER CHANNEL MATCHED", flush=True)
+
         handled = await handle_reminder_message(message, content, reminder_sheet)
+
+        print(f"REMINDER HANDLED: {handled}", flush=True)
+
         if handled:
             return
 
