@@ -1,8 +1,8 @@
 import os
 import json
+import asyncio
 import discord
 from discord.ext import commands
-from discord import app_commands
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -14,8 +14,11 @@ from shopping import (
     cmd_done,
     cmd_remove,
 )
-from reminder import handle_reminder_message
-
+from reminder import (
+    setup_reminder_sheet,
+    start_reminder_loop,
+    handle_reminder_message,
+)
 
 # ===== Google Sheets設定 =====
 scope = [
@@ -31,8 +34,13 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(
 )
 
 client_gs = gspread.authorize(creds)
-sheet = client_gs.open("Shopping_List").sheet1
+spreadsheet = client_gs.open("Shopping_List")
 
+# 既存の買い物リストは sheet1 をそのまま使う
+shopping_sheet = spreadsheet.sheet1
+
+# リマインダー用ワークシートを作成 / 取得
+reminder_sheet = setup_reminder_sheet(spreadsheet)
 
 # ===== Discord Bot設定 =====
 intents = discord.Intents.default()
@@ -99,8 +107,31 @@ def create_reminder_help_embed():
     )
 
     embed.add_field(
-        name="📝 例",
-        value="（あとで作る）",
+        name="📝 登録例",
+        value=(
+            "10分後 薬を飲む\n"
+            "今日 21:00 お風呂 30分おき\n"
+            "明日 07:30 ゴミ出し 15分おき\n"
+            "2026-04-05 19:00 会議"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📋 一覧",
+        value="一覧 / リスト / リマインダー一覧",
+        inline=False
+    )
+
+    embed.add_field(
+        name="✅ 完了",
+        value="完了 1",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🗑 削除",
+        value="削除 1",
         inline=False
     )
 
@@ -121,14 +152,14 @@ def get_help_embed(channel_id):
     )
 
 
-# ===== コマンド =====
+# ===== テキストコマンド =====
 @bot.command()
 async def add(ctx, *, item):
     if not is_shopping_channel(ctx.channel.id):
         await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
         return
 
-    await cmd_add(ctx, sheet, item)
+    await cmd_add(ctx, shopping_sheet, item)
 
 
 @bot.command()
@@ -137,7 +168,7 @@ async def list(ctx):
         await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
         return
 
-    await cmd_list(ctx, sheet)
+    await cmd_list(ctx, shopping_sheet)
 
 
 @bot.command()
@@ -146,7 +177,7 @@ async def done(ctx, *, item):
         await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
         return
 
-    await cmd_done(ctx, sheet, item)
+    await cmd_done(ctx, shopping_sheet, item)
 
 
 @bot.command()
@@ -155,7 +186,7 @@ async def remove(ctx, *, item):
         await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
         return
 
-    await cmd_remove(ctx, sheet, item)
+    await cmd_remove(ctx, shopping_sheet, item)
 
 
 # ===== スラッシュコマンド =====
@@ -170,7 +201,11 @@ async def help_command(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
     await tree.sync()
+    print(f"ログイン完了: {bot.user}")
     print("スラッシュコマンド同期完了")
+
+    # リマインダー監視ループ開始
+    start_reminder_loop(bot, reminder_sheet)
 
 
 @bot.event
@@ -182,12 +217,12 @@ async def on_message(message):
     channel_id = message.channel.id
 
     if is_shopping_channel(channel_id):
-        handled = await handle_shopping_message(message, content, sheet)
+        handled = await handle_shopping_message(message, content, shopping_sheet)
         if handled:
             return
 
     elif is_reminder_channel(channel_id):
-        handled = await handle_reminder_message(message, content)
+        handled = await handle_reminder_message(message, content, reminder_sheet)
         if handled:
             return
 
@@ -197,20 +232,24 @@ async def on_message(message):
 # ===== 起動 =====
 from flask import Flask
 from threading import Thread
-import os
 
 app = Flask('')
+
 
 @app.route('/')
 def home():
     return "Bot is running"
 
+
 def run_web():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+
 
 def keep_alive():
     t = Thread(target=run_web)
+    t.daemon = True
     t.start()
+
 
 keep_alive()
 bot.run(os.environ["DISCORD_TOKEN"])
