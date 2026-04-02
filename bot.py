@@ -1,6 +1,8 @@
 import os
+import json
 import discord
 from discord.ext import commands
+from discord import app_commands
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -16,9 +18,6 @@ from reminder import handle_reminder_message
 
 
 # ===== Google Sheets設定 =====
-import os
-import json
-
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
@@ -32,7 +31,6 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(
 )
 
 client_gs = gspread.authorize(creds)
-
 sheet = client_gs.open("Shopping_List").sheet1
 
 
@@ -41,6 +39,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+tree = bot.tree
 
 
 def is_shopping_channel(channel_id):
@@ -49,6 +48,77 @@ def is_shopping_channel(channel_id):
 
 def is_reminder_channel(channel_id):
     return channel_id == REMINDER_CHANNEL_ID
+
+
+# ===== ヘルプ系 =====
+def create_shopping_help_embed():
+    embed = discord.Embed(
+        title="🛒 買い物リスト ヘルプ",
+        description="こちらでは買い物リスト機能をご利用いただけますわ。",
+        color=0x00FFCC
+    )
+
+    embed.add_field(
+        name="📦 追加",
+        value="牛乳を追加 / 牛乳追加 / 牛乳入れて",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🗑 削除",
+        value="ココアを削除",
+        inline=False
+    )
+
+    embed.add_field(
+        name="✅ 購入済み",
+        value="ココアを購入済み / ココア購入",
+        inline=False
+    )
+
+    embed.add_field(
+        name="📋 表示",
+        value="リスト / リスト表示",
+        inline=False
+    )
+
+    embed.add_field(
+        name="⚠️ その他",
+        value="全部削除 / リスト削除",
+        inline=False
+    )
+
+    return embed
+
+
+def create_reminder_help_embed():
+    embed = discord.Embed(
+        title="⏰ リマインダー ヘルプ",
+        description="こちらではリマインダー機能をご利用いただけますわ。",
+        color=0xFFCC00
+    )
+
+    embed.add_field(
+        name="📝 例",
+        value="（あとで作る）",
+        inline=False
+    )
+
+    return embed
+
+
+def get_help_embed(channel_id):
+    if is_shopping_channel(channel_id):
+        return create_shopping_help_embed()
+
+    if is_reminder_channel(channel_id):
+        return create_reminder_help_embed()
+
+    return discord.Embed(
+        title="ヘルプ",
+        description="このチャンネルでは機能が設定されておりませんわ。",
+        color=0x999999
+    )
 
 
 # ===== コマンド =====
@@ -88,7 +158,21 @@ async def remove(ctx, *, item):
     await cmd_remove(ctx, sheet, item)
 
 
-# ===== 自然文処理 =====
+# ===== スラッシュコマンド =====
+@tree.command(name="help", description="コマンドの使い方を表示します")
+async def help_command(interaction: discord.Interaction):
+    channel_id = interaction.channel.id
+    embed = get_help_embed(channel_id)
+    await interaction.response.send_message(embed=embed)
+
+
+# ===== イベント =====
+@bot.event
+async def on_ready():
+    await tree.sync()
+    print("スラッシュコマンド同期完了")
+
+
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -111,4 +195,22 @@ async def on_message(message):
 
 
 # ===== 起動 =====
+from flask import Flask
+from threading import Thread
+import os
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running"
+
+def run_web():
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
+
+keep_alive()
 bot.run(os.environ["DISCORD_TOKEN"])
