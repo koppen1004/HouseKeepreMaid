@@ -266,7 +266,18 @@ async def handle_list(message, sheet):
     records = await get_records_async(sheet)
     channel_id = str(message.channel.id)
 
+    print("=== ALL RECORDS ===")
+    for r in records:
+        print(r)
+
+    print("CURRENT CHANNEL ID:", channel_id)
+
     filtered = [r for r in records if r.get("channel_id") == channel_id]
+
+    print("=== FILTERED RECORDS ===")
+    for r in filtered:
+        print(r)
+
     embed = build_reminder_embed(filtered)
     await message.channel.send(embed=embed)
     return True
