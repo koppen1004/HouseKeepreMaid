@@ -239,6 +239,7 @@ async def on_message(message):
 # ===== 起動 =====
 from flask import Flask
 from threading import Thread
+import time
 
 app = Flask('')
 
@@ -258,5 +259,36 @@ def keep_alive():
     t.start()
 
 
+def run_bot():
+    retry_count = 0
+
+    while True:
+        try:
+            print("Starting bot...", flush=True)
+            bot.run(os.environ["DISCORD_TOKEN"])
+
+        except discord.HTTPException as e:
+            status = getattr(e, "status", None)
+
+            print(f"[ERROR] Discord HTTPException: status={status}", flush=True)
+            print(str(e), flush=True)
+
+            if status == 429:
+                wait_time = 120
+                print(f"[RATE LIMIT] Sleeping {wait_time}s...", flush=True)
+                time.sleep(wait_time)
+            else:
+                wait_time = 30
+                print(f"[HTTP ERROR] Sleeping {wait_time}s...", flush=True)
+                time.sleep(wait_time)
+
+        except Exception as e:
+            print(f"[FATAL ERROR] {e}", flush=True)
+            time.sleep(30)
+
+        retry_count += 1
+        print(f"[RETRY] count={retry_count}", flush=True)
+
+
 keep_alive()
-bot.run(os.environ["DISCORD_TOKEN"])
+run_bot()
