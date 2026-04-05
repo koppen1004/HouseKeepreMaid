@@ -131,14 +131,14 @@ def create_embed(sheet):
     return embed
 
 
-async def handle_shopping_message(message, content, sheet):
+async def handle_shopping_message(bot, message, content, sheet):
     try:
         user_id = message.author.id
 
         if content in ["リスト削除", "全部削除", "リスト全削除"]:
             confirm_clear[user_id] = True
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 content="⚠️ 本当に削除いたしますの？「はい」で実行いたしますわ。"
             )
@@ -148,7 +148,7 @@ async def handle_shopping_message(message, content, sheet):
             sheet.resize(1)
             confirm_clear[user_id] = False
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 content="🧹 注文予定は白紙にいたしましたわ。"
             )
@@ -174,13 +174,13 @@ async def handle_shopping_message(message, content, sheet):
                     "未購入"
                 ])
                 await enqueue_message(
-                    message.client,
+                    bot,
                     message.channel.id,
                     content=f"{item} を追加いたしましたわ。"
                 )
             else:
                 await enqueue_message(
-                    message.client,
+                    bot,
                     message.channel.id,
                     content="追加する品をお書きくださいませ。"
                 )
@@ -192,7 +192,7 @@ async def handle_shopping_message(message, content, sheet):
 
             if len(data) <= 1:
                 await enqueue_message(
-                    message.client,
+                    bot,
                     message.channel.id,
                     content="注文予定は何もないようですわね。"
                 )
@@ -201,7 +201,7 @@ async def handle_shopping_message(message, content, sheet):
             embed = create_embed(sheet)
             view = ShoppingView(sheet, create_embed)
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 embed=embed,
                 view=view,
@@ -221,14 +221,14 @@ async def handle_shopping_message(message, content, sheet):
                 if row[2] == item:
                     sheet.delete_rows(i + 1)
                     await enqueue_message(
-                        message.client,
+                        bot,
                         message.channel.id,
                         content=f"{item} は注文予定から外しておきますわね。"
                     )
                     return True
 
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 content="そちらは注文予定にはないようですわ。"
             )
@@ -246,14 +246,14 @@ async def handle_shopping_message(message, content, sheet):
                 if row[2] == item:
                     sheet.update_cell(i + 1, 4, "済")
                     await enqueue_message(
-                        message.client,
+                        bot,
                         message.channel.id,
                         content=f"{item} を注文いたしましたわ。"
                     )
                     return True
 
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 content="そちらは注文予定にはないようですわ。"
             )
@@ -271,14 +271,14 @@ async def handle_shopping_message(message, content, sheet):
                 if row[2] == item:
                     sheet.update_cell(i + 1, 4, "済")
                     await enqueue_message(
-                        message.client,
+                        bot,
                         message.channel.id,
                         content=f"{item} を注文いたしましたわ。"
                     )
                     return True
 
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 content="そちらは注文予定にはないようですわ。"
             )
@@ -292,13 +292,13 @@ async def handle_shopping_message(message, content, sheet):
 
         if status == 429:
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
             )
         else:
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 content="問題が発生しているようですわ。"
             )
@@ -306,11 +306,14 @@ async def handle_shopping_message(message, content, sheet):
 
     except Exception as e:
         print(f"[ERROR] handle_shopping_message unexpected: {e}", flush=True)
-        await enqueue_message(
-            message.client,
-            message.channel.id,
-            content="問題が発生しているようですわ。"
-        )
+        try:
+            await enqueue_message(
+                bot,
+                message.channel.id,
+                content="問題が発生しているようですわ。"
+            )
+        except Exception as enqueue_error:
+            print(f"[ERROR] handle_shopping_message enqueue failed: {enqueue_error}", flush=True)
         return True
 
 

@@ -160,6 +160,7 @@ class MessageSenderQueue:
                     )
                     await asyncio.sleep(wait_time)
                     continue
+
                 logger.exception(
                     f"Timeout exceeded retries: channel_id={task.channel_id}, metadata={task.metadata}"
                 )
@@ -174,6 +175,7 @@ class MessageSenderQueue:
                     )
                     await asyncio.sleep(wait_time)
                     continue
+
                 logger.exception(
                     f"Send failed after retries: channel_id={task.channel_id}, "
                     f"metadata={task.metadata}, error={e}"

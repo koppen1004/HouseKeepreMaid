@@ -26,7 +26,6 @@ from send_queue import MessageSenderQueue
 logging.basicConfig(level=logging.INFO)
 
 
-# ===== Google Sheets設定 =====
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
@@ -46,7 +45,6 @@ shopping_sheet = spreadsheet.sheet1
 reminder_sheet = setup_reminder_sheet(spreadsheet)
 
 
-# ===== Flask keep_alive =====
 app = Flask("")
 
 
@@ -65,7 +63,6 @@ def keep_alive():
     t.start()
 
 
-# ===== ヘルプ系 =====
 def create_shopping_help_embed():
     embed = discord.Embed(
         title="🛒 買い物リスト ヘルプ",
@@ -196,7 +193,6 @@ def create_bot():
             color=0x999999
         )
 
-    # ===== テキストコマンド =====
     @bot.command()
     async def add(ctx, *, item):
         try:
@@ -262,7 +258,6 @@ def create_bot():
             print(f"[ERROR] queue_status failed: {e}", flush=True)
             await ctx.send("処理中にエラーが発生しましたわ。")
 
-    # ===== スラッシュコマンド =====
     @tree.command(name="help", description="コマンドの使い方を表示します")
     async def help_command(interaction: discord.Interaction):
         try:
@@ -278,7 +273,6 @@ def create_bot():
                 ephemeral=True
             )
 
-    # ===== イベント =====
     @bot.event
     async def on_ready():
         try:
@@ -311,14 +305,14 @@ def create_bot():
             print(f"ON_MESSAGE: channel={channel_id} content={content}", flush=True)
 
             if is_shopping_channel(channel_id):
-                handled = await handle_shopping_message(message, content, shopping_sheet)
+                handled = await handle_shopping_message(bot, message, content, shopping_sheet)
                 if handled:
                     return
 
             elif is_reminder_channel(channel_id):
                 print("REMINDER CHANNEL MATCHED", flush=True)
 
-                handled = await handle_reminder_message(message, content, reminder_sheet)
+                handled = await handle_reminder_message(bot, message, content, reminder_sheet)
                 print(f"REMINDER HANDLED: {handled}", flush=True)
 
                 if handled:

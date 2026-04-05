@@ -25,9 +25,6 @@ HEADERS = [
 reminder_loop = None
 
 
-# =========================
-# シート準備
-# =========================
 def setup_reminder_sheet(spreadsheet):
     try:
         ws = spreadsheet.worksheet("Reminders")
@@ -45,9 +42,6 @@ def setup_reminder_sheet(spreadsheet):
     return ws
 
 
-# =========================
-# 時刻関連
-# =========================
 def now_jst():
     return datetime.utcnow() + JST
 
@@ -60,9 +54,6 @@ def parse_dt(s: str) -> datetime:
     return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
 
 
-# =========================
-# 解析
-# =========================
 def parse_repeat_minutes(text: str):
     m = re.search(r"\s+(\d+)分おき$", text)
     if m:
@@ -120,9 +111,6 @@ def parse_reminder_input(content: str):
     return None, None, None
 
 
-# =========================
-# シート操作
-# =========================
 def _get_all_records(sheet):
     return sheet.get_all_records()
 
@@ -170,9 +158,6 @@ async def get_next_id(sheet):
     return max_id + 1
 
 
-# =========================
-# 表示系
-# =========================
 def build_reminder_embed(records):
     embed = discord.Embed(
         title="⏰ リマインダー一覧",
@@ -211,10 +196,7 @@ def build_reminder_embed(records):
     return embed
 
 
-# =========================
-# メッセージ処理
-# =========================
-async def create_reminder(message, content, sheet):
+async def create_reminder(bot, message, content, sheet):
     try:
         remind_at, text, repeat_minutes = parse_reminder_input(content)
 
@@ -250,7 +232,7 @@ async def create_reminder(message, content, sheet):
         embed.add_field(name="再通知", value=f"{repeat_minutes}分おき", inline=False)
 
         await enqueue_message(
-            message.client,
+            bot,
             message.channel.id,
             embed=embed,
             metadata={"feature": "reminder", "action": "create", "reminder_id": rid},
@@ -260,7 +242,7 @@ async def create_reminder(message, content, sheet):
     except Exception as e:
         print(f"[ERROR] create_reminder: {e}", flush=True)
         await enqueue_message(
-            message.client,
+            bot,
             message.channel.id,
             content="問題が発生しているようですわ。",
             metadata={"feature": "reminder", "action": "create_error"},
@@ -268,7 +250,7 @@ async def create_reminder(message, content, sheet):
         return True
 
 
-async def handle_list(message, sheet):
+async def handle_list(bot, message, sheet):
     try:
         records = await get_records_async(sheet)
 
@@ -279,7 +261,7 @@ async def handle_list(message, sheet):
 
         embed = build_reminder_embed(filtered)
         await enqueue_message(
-            message.client,
+            bot,
             message.channel.id,
             embed=embed,
             metadata={"feature": "reminder", "action": "list"},
@@ -289,7 +271,7 @@ async def handle_list(message, sheet):
     except Exception as e:
         print(f"[ERROR] handle_list: {e}", flush=True)
         await enqueue_message(
-            message.client,
+            bot,
             message.channel.id,
             content="問題が発生しているようですわ。",
             metadata={"feature": "reminder", "action": "list_error"},
@@ -297,7 +279,7 @@ async def handle_list(message, sheet):
         return True
 
 
-async def handle_complete(message, content, sheet):
+async def handle_complete(bot, message, content, sheet):
     try:
         m = re.match(r"^完了\s+(\d+)$", content)
         if not m:
@@ -310,7 +292,7 @@ async def handle_complete(message, content, sheet):
             if str(r.get("id")) == target_id and str(r.get("channel_id")) == str(message.channel.id):
                 await update_cell_async(sheet, i, 9, "done")
                 await enqueue_message(
-                    message.client,
+                    bot,
                     message.channel.id,
                     content=f"✅ リマインダー {target_id} 、完了ですわ。",
                     metadata={"feature": "reminder", "action": "complete", "reminder_id": target_id},
@@ -318,7 +300,7 @@ async def handle_complete(message, content, sheet):
                 return True
 
         await enqueue_message(
-            message.client,
+            bot,
             message.channel.id,
             content="そのIDのリマインダーは見つかりませんわ。",
             metadata={"feature": "reminder", "action": "complete_not_found", "reminder_id": target_id},
@@ -328,7 +310,7 @@ async def handle_complete(message, content, sheet):
     except Exception as e:
         print(f"[ERROR] handle_complete: {e}", flush=True)
         await enqueue_message(
-            message.client,
+            bot,
             message.channel.id,
             content="問題が発生しているようですわ。",
             metadata={"feature": "reminder", "action": "complete_error"},
@@ -336,7 +318,7 @@ async def handle_complete(message, content, sheet):
         return True
 
 
-async def handle_delete(message, content, sheet):
+async def handle_delete(bot, message, content, sheet):
     try:
         m = re.match(r"^削除\s+(\d+)$", content)
         if not m:
@@ -349,7 +331,7 @@ async def handle_delete(message, content, sheet):
             if str(r.get("id")) == target_id and str(r.get("channel_id")) == str(message.channel.id):
                 await delete_row_async(sheet, i)
                 await enqueue_message(
-                    message.client,
+                    bot,
                     message.channel.id,
                     content=f"🗑 リマインダー {target_id} を削除いたしましたわ。",
                     metadata={"feature": "reminder", "action": "delete", "reminder_id": target_id},
@@ -357,7 +339,7 @@ async def handle_delete(message, content, sheet):
                 return True
 
         await enqueue_message(
-            message.client,
+            bot,
             message.channel.id,
             content="そのIDのリマインダーは見つかりませんわ。",
             metadata={"feature": "reminder", "action": "delete_not_found", "reminder_id": target_id},
@@ -367,7 +349,7 @@ async def handle_delete(message, content, sheet):
     except Exception as e:
         print(f"[ERROR] handle_delete: {e}", flush=True)
         await enqueue_message(
-            message.client,
+            bot,
             message.channel.id,
             content="問題が発生しているようですわ。",
             metadata={"feature": "reminder", "action": "delete_error"},
@@ -375,13 +357,13 @@ async def handle_delete(message, content, sheet):
         return True
 
 
-async def handle_reminder_message(message, content, sheet):
+async def handle_reminder_message(bot, message, content, sheet):
     print(f"HANDLE_REMINDER_MESSAGE: {content}", flush=True)
 
     try:
         if content in ["テスト", "確認", "リマインダー確認"]:
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 content="こちらはリマインダー用チャンネルですわ。",
                 metadata={"feature": "reminder", "action": "channel_check"},
@@ -389,20 +371,20 @@ async def handle_reminder_message(message, content, sheet):
             return True
 
         if content in ["一覧", "リスト", "リマインダー一覧"]:
-            return await handle_list(message, sheet)
+            return await handle_list(bot, message, sheet)
 
-        if await handle_complete(message, content, sheet):
+        if await handle_complete(bot, message, content, sheet):
             return True
 
-        if await handle_delete(message, content, sheet):
+        if await handle_delete(bot, message, content, sheet):
             return True
 
-        if await create_reminder(message, content, sheet):
+        if await create_reminder(bot, message, content, sheet):
             return True
 
         if content in ["help", "/help", "ヘルプ"]:
             await enqueue_message(
-                message.client,
+                bot,
                 message.channel.id,
                 content=(
                     "使い方例:\n"
@@ -422,18 +404,18 @@ async def handle_reminder_message(message, content, sheet):
 
     except Exception as e:
         print(f"[ERROR] handle_reminder_message: {e}", flush=True)
-        await enqueue_message(
-            message.client,
-            message.channel.id,
-            content="問題が発生しているようですわ。",
-            metadata={"feature": "reminder", "action": "handle_message_error"},
-        )
+        try:
+            await enqueue_message(
+                bot,
+                message.channel.id,
+                content="問題が発生しているようですわ。",
+                metadata={"feature": "reminder", "action": "handle_message_error"},
+            )
+        except Exception as enqueue_error:
+            print(f"[ERROR] handle_reminder_message enqueue failed: {enqueue_error}", flush=True)
         return True
 
 
-# =========================
-# バックグラウンド監視
-# =========================
 def start_reminder_loop(bot, sheet):
     global reminder_loop
 
