@@ -1,7 +1,10 @@
-import discord
-from discord.ui import View, Button
-from discord import ButtonStyle
 from datetime import datetime
+
+import discord
+from discord import ButtonStyle
+from discord.ui import Button, View
+
+from send_queue import enqueue_message
 
 confirm_clear = {}
 
@@ -30,14 +33,61 @@ class ShoppingView(View):
             )
 
             async def callback(interaction, row=i, item=item):
-                current = self.sheet.cell(row, 4).value
-                new_status = "未購入" if current == "済" else "済"
-                self.sheet.update_cell(row, 4, new_status)
+                try:
+                    current = self.sheet.cell(row, 4).value
+                    new_status = "未購入" if current == "済" else "済"
+                    self.sheet.update_cell(row, 4, new_status)
 
-                embed = self.create_embed_func(self.sheet)
-                view = ShoppingView(self.sheet, self.create_embed_func)
+                    embed = self.create_embed_func(self.sheet)
+                    view = ShoppingView(self.sheet, self.create_embed_func)
 
-                await interaction.response.edit_message(embed=embed, view=view)
+                    await interaction.response.edit_message(embed=embed, view=view)
+
+                except discord.HTTPException as e:
+                    status = getattr(e, "status", None)
+                    print(f"[ERROR] shopping button callback HTTPException: status={status} error={e}", flush=True)
+
+                    try:
+                        if status == 429:
+                            if interaction.response.is_done():
+                                await interaction.followup.send(
+                                    "ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。",
+                                    ephemeral=True
+                                )
+                            else:
+                                await interaction.response.send_message(
+                                    "ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。",
+                                    ephemeral=True
+                                )
+                        else:
+                            if interaction.response.is_done():
+                                await interaction.followup.send(
+                                    "問題が発生しているようですわ。",
+                                    ephemeral=True
+                                )
+                            else:
+                                await interaction.response.send_message(
+                                    "問題が発生しているようですわ。",
+                                    ephemeral=True
+                                )
+                    except Exception as notify_error:
+                        print(f"[ERROR] shopping button callback notify failed: {notify_error}", flush=True)
+
+                except Exception as e:
+                    print(f"[ERROR] shopping button callback unexpected: {e}", flush=True)
+                    try:
+                        if interaction.response.is_done():
+                            await interaction.followup.send(
+                                "問題が発生しているようですわ。",
+                                ephemeral=True
+                            )
+                        else:
+                            await interaction.response.send_message(
+                                "問題が発生しているようですわ。",
+                                ephemeral=True
+                            )
+                    except Exception as notify_error:
+                        print(f"[ERROR] shopping button callback fallback failed: {notify_error}", flush=True)
 
             button.callback = callback
             self.add_item(button)
@@ -82,163 +132,371 @@ def create_embed(sheet):
 
 
 async def handle_shopping_message(message, content, sheet):
-    user_id = message.author.id
+    try:
+        user_id = message.author.id
 
-    # 全削除（確認）
-    if content in ["リスト削除", "全部削除", "リスト全削除"]:
-        confirm_clear[user_id] = True
-        await message.channel.send("⚠️ 本当に削除いたしますの？「はい」で実行いたしますわ。")
-        return True
-
-    if content == "はい" and confirm_clear.get(user_id):
-        sheet.resize(1)
-        confirm_clear[user_id] = False
-        await message.channel.send("🧹 注文予定は白紙にいたしましたわ。")
-        return True
-
-    # 追加
-    suffixes = ["を追加", "追加", "追加して", "入れて"]
-
-    if any(content.endswith(s) for s in suffixes):
-        item = content
-
-        for s in suffixes:
-            if item.endswith(s):
-                item = item[:-len(s)]
-                break
-
-        item = item.strip()
-
-        if item:
-            sheet.append_row([
-                datetime.now().strftime("%Y-%m-%d %H:%M"),
-                str(message.author),
-                item,
-                "未購入"
-            ])
-            await message.channel.send(f"{item} を追加いたしましたわ。")
-        else:
-            await message.channel.send("追加する品をお書きくださいませ。")
-
-        return
-
-    # 表示
-    if content in ["リスト", "リスト表示", "買い物リスト", "表示"]:
-        data = sheet.get_all_values()
-        if len(data) <= 1:
-            await message.channel.send("注文予定は何もないようですわね。")
+        if content in ["リスト削除", "全部削除", "リスト全削除"]:
+            confirm_clear[user_id] = True
+            await enqueue_message(
+                message.client,
+                message.channel.id,
+                content="⚠️ 本当に削除いたしますの？「はい」で実行いたしますわ。"
+            )
             return True
 
-        embed = create_embed(sheet)
-        view = ShoppingView(sheet, create_embed)
-        await message.channel.send(embed=embed, view=view)
-        return True
+        if content == "はい" and confirm_clear.get(user_id):
+            sheet.resize(1)
+            confirm_clear[user_id] = False
+            await enqueue_message(
+                message.client,
+                message.channel.id,
+                content="🧹 注文予定は白紙にいたしましたわ。"
+            )
+            return True
 
-    # 削除
-    if content.endswith("を削除"):
-        item = content.replace("を削除", "").replace("削除", "").strip()
-        data = sheet.get_all_values()
+        suffixes = ["を追加", "追加", "追加して", "入れて"]
 
-        for i, row in enumerate(data):
-            if i == 0:
-                continue
-            if len(row) < 4:
-                continue
-            if row[2] == item:
-                sheet.delete_rows(i + 1)
-                await message.channel.send(f"{item} は注文予定から外しておきますわね。")
+        if any(content.endswith(s) for s in suffixes):
+            item = content
+
+            for s in suffixes:
+                if item.endswith(s):
+                    item = item[:-len(s)]
+                    break
+
+            item = item.strip()
+
+            if item:
+                sheet.append_row([
+                    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    str(message.author),
+                    item,
+                    "未購入"
+                ])
+                await enqueue_message(
+                    message.client,
+                    message.channel.id,
+                    content=f"{item} を追加いたしましたわ。"
+                )
+            else:
+                await enqueue_message(
+                    message.client,
+                    message.channel.id,
+                    content="追加する品をお書きくださいませ。"
+                )
+
+            return True
+
+        if content in ["リスト", "リスト表示", "買い物リスト", "表示"]:
+            data = sheet.get_all_values()
+
+            if len(data) <= 1:
+                await enqueue_message(
+                    message.client,
+                    message.channel.id,
+                    content="注文予定は何もないようですわね。"
+                )
                 return True
 
-        await message.channel.send("そちらは注文予定にはないようですわ。")
+            embed = create_embed(sheet)
+            view = ShoppingView(sheet, create_embed)
+            await enqueue_message(
+                message.client,
+                message.channel.id,
+                embed=embed,
+                view=view,
+                metadata={"feature": "shopping", "action": "show_list"},
+            )
+            return True
+
+        if content.endswith("を削除"):
+            item = content.replace("を削除", "").replace("削除", "").strip()
+            data = sheet.get_all_values()
+
+            for i, row in enumerate(data):
+                if i == 0:
+                    continue
+                if len(row) < 4:
+                    continue
+                if row[2] == item:
+                    sheet.delete_rows(i + 1)
+                    await enqueue_message(
+                        message.client,
+                        message.channel.id,
+                        content=f"{item} は注文予定から外しておきますわね。"
+                    )
+                    return True
+
+            await enqueue_message(
+                message.client,
+                message.channel.id,
+                content="そちらは注文予定にはないようですわ。"
+            )
+            return True
+
+        if content.endswith("を購入済み"):
+            item = content.replace("を購入済み", "").replace("購入", "").strip()
+            data = sheet.get_all_values()
+
+            for i, row in enumerate(data):
+                if i == 0:
+                    continue
+                if len(row) < 4:
+                    continue
+                if row[2] == item:
+                    sheet.update_cell(i + 1, 4, "済")
+                    await enqueue_message(
+                        message.client,
+                        message.channel.id,
+                        content=f"{item} を注文いたしましたわ。"
+                    )
+                    return True
+
+            await enqueue_message(
+                message.client,
+                message.channel.id,
+                content="そちらは注文予定にはないようですわ。"
+            )
+            return True
+
+        if content.endswith("購入"):
+            item = content[:-2].strip()
+            data = sheet.get_all_values()
+
+            for i, row in enumerate(data):
+                if i == 0:
+                    continue
+                if len(row) < 4:
+                    continue
+                if row[2] == item:
+                    sheet.update_cell(i + 1, 4, "済")
+                    await enqueue_message(
+                        message.client,
+                        message.channel.id,
+                        content=f"{item} を注文いたしましたわ。"
+                    )
+                    return True
+
+            await enqueue_message(
+                message.client,
+                message.channel.id,
+                content="そちらは注文予定にはないようですわ。"
+            )
+            return True
+
+        return False
+
+    except discord.HTTPException as e:
+        status = getattr(e, "status", None)
+        print(f"[ERROR] handle_shopping_message HTTPException: status={status} error={e}", flush=True)
+
+        if status == 429:
+            await enqueue_message(
+                message.client,
+                message.channel.id,
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+            )
+        else:
+            await enqueue_message(
+                message.client,
+                message.channel.id,
+                content="問題が発生しているようですわ。"
+            )
         return True
 
-    # 購入済み
-    if content.endswith("を購入済み"):
-        item = content.replace("を購入済み", "").replace("購入", "").strip()
-        data = sheet.get_all_values()
-
-        for i, row in enumerate(data):
-            if i == 0:
-                continue
-            if len(row) < 4:
-                continue
-            if row[2] == item:
-                sheet.update_cell(i + 1, 4, "済")
-                await message.channel.send(f"{item} を注文いたしましたわ。")
-                return True
-
-        await message.channel.send("そちらは注文予定にはないようですわ。")
+    except Exception as e:
+        print(f"[ERROR] handle_shopping_message unexpected: {e}", flush=True)
+        await enqueue_message(
+            message.client,
+            message.channel.id,
+            content="問題が発生しているようですわ。"
+        )
         return True
-
-    if content.endswith("購入"):
-        item = content[:-2].strip()  # "購入" を削る
-        data = sheet.get_all_values()
-
-        for i, row in enumerate(data):
-            if i == 0:
-                continue
-            if len(row) < 4:
-                continue
-            if row[2] == item:
-                sheet.update_cell(i + 1, 4, "済")
-                await message.channel.send(f"{item} を注文いたしましたわ。")
-                return True
-
-        await message.channel.send("そちらは注文予定にはないようですわ。")
-        return True
-
-    return False
 
 
 async def cmd_add(ctx, sheet, item):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    user = str(ctx.author)
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        user = str(ctx.author)
 
-    sheet.append_row([now, user, item, "未購入"])
-    await ctx.send(f"商品を追加いたしましたわ：{item}")
+        sheet.append_row([now, user, item, "未購入"])
+        await enqueue_message(
+            ctx.bot,
+            ctx.channel.id,
+            content=f"商品を追加いたしましたわ：{item}"
+        )
+
+    except discord.HTTPException as e:
+        status = getattr(e, "status", None)
+        print(f"[ERROR] cmd_add HTTPException: status={status} error={e}", flush=True)
+
+        if status == 429:
+            await enqueue_message(
+                ctx.bot,
+                ctx.channel.id,
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+            )
+        else:
+            await enqueue_message(
+                ctx.bot,
+                ctx.channel.id,
+                content="問題が発生しているようですわ。"
+            )
+
+    except Exception as e:
+        print(f"[ERROR] cmd_add unexpected: {e}", flush=True)
+        await enqueue_message(
+            ctx.bot,
+            ctx.channel.id,
+            content="問題が発生しているようですわ。"
+        )
 
 
 async def cmd_list(ctx, sheet):
-    data = sheet.get_all_values()
+    try:
+        data = sheet.get_all_values()
 
-    if len(data) <= 1:
-        await ctx.send("何も入っておりません。")
-        return
+        if len(data) <= 1:
+            await enqueue_message(
+                ctx.bot,
+                ctx.channel.id,
+                content="何も入っておりません。"
+            )
+            return
 
-    embed = create_embed(sheet)
-    view = ShoppingView(sheet, create_embed)
-    await ctx.send(embed=embed, view=view)
+        embed = create_embed(sheet)
+        view = ShoppingView(sheet, create_embed)
+        await enqueue_message(
+            ctx.bot,
+            ctx.channel.id,
+            embed=embed,
+            view=view,
+            metadata={"feature": "shopping", "action": "cmd_list"},
+        )
+
+    except discord.HTTPException as e:
+        status = getattr(e, "status", None)
+        print(f"[ERROR] cmd_list HTTPException: status={status} error={e}", flush=True)
+
+        if status == 429:
+            await enqueue_message(
+                ctx.bot,
+                ctx.channel.id,
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+            )
+        else:
+            await enqueue_message(
+                ctx.bot,
+                ctx.channel.id,
+                content="問題が発生しているようですわ。"
+            )
+
+    except Exception as e:
+        print(f"[ERROR] cmd_list unexpected: {e}", flush=True)
+        await enqueue_message(
+            ctx.bot,
+            ctx.channel.id,
+            content="問題が発生しているようですわ。"
+        )
 
 
 async def cmd_done(ctx, sheet, item):
-    data = sheet.get_all_values()
+    try:
+        data = sheet.get_all_values()
 
-    for i, row in enumerate(data):
-        if i == 0:
-            continue
-        if len(row) < 4:
-            continue
+        for i, row in enumerate(data):
+            if i == 0:
+                continue
+            if len(row) < 4:
+                continue
 
-        if row[2] == item:
-            sheet.update_cell(i + 1, 4, "済")
-            await ctx.send(f"{item} を注文いたしましたわ。")
-            return
+            if row[2] == item:
+                sheet.update_cell(i + 1, 4, "済")
+                await enqueue_message(
+                    ctx.bot,
+                    ctx.channel.id,
+                    content=f"{item} を注文いたしましたわ。"
+                )
+                return
 
-    await ctx.send("そちらは注文予定にはないようですわ。")
+        await enqueue_message(
+            ctx.bot,
+            ctx.channel.id,
+            content="そちらは注文予定にはないようですわ。"
+        )
+
+    except discord.HTTPException as e:
+        status = getattr(e, "status", None)
+        print(f"[ERROR] cmd_done HTTPException: status={status} error={e}", flush=True)
+
+        if status == 429:
+            await enqueue_message(
+                ctx.bot,
+                ctx.channel.id,
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+            )
+        else:
+            await enqueue_message(
+                ctx.bot,
+                ctx.channel.id,
+                content="問題が発生しているようですわ。"
+            )
+
+    except Exception as e:
+        print(f"[ERROR] cmd_done unexpected: {e}", flush=True)
+        await enqueue_message(
+            ctx.bot,
+            ctx.channel.id,
+            content="問題が発生しているようですわ。"
+        )
 
 
 async def cmd_remove(ctx, sheet, item):
-    data = sheet.get_all_values()
+    try:
+        data = sheet.get_all_values()
 
-    for i, row in enumerate(data):
-        if i == 0:
-            continue
-        if len(row) < 4:
-            continue
+        for i, row in enumerate(data):
+            if i == 0:
+                continue
+            if len(row) < 4:
+                continue
 
-        if row[2] == item:
-            sheet.delete_rows(i + 1)
-            await ctx.send(f"{item} は注文予定から外しておきますわね。")
-            return
+            if row[2] == item:
+                sheet.delete_rows(i + 1)
+                await enqueue_message(
+                    ctx.bot,
+                    ctx.channel.id,
+                    content=f"{item} は注文予定から外しておきますわね。"
+                )
+                return
 
-    await ctx.send("そちらは注文予定にはないようですわ。")
+        await enqueue_message(
+            ctx.bot,
+            ctx.channel.id,
+            content="そちらは注文予定にはないようですわ。"
+        )
+
+    except discord.HTTPException as e:
+        status = getattr(e, "status", None)
+        print(f"[ERROR] cmd_remove HTTPException: status={status} error={e}", flush=True)
+
+        if status == 429:
+            await enqueue_message(
+                ctx.bot,
+                ctx.channel.id,
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+            )
+        else:
+            await enqueue_message(
+                ctx.bot,
+                ctx.channel.id,
+                content="問題が発生しているようですわ。"
+            )
+
+    except Exception as e:
+        print(f"[ERROR] cmd_remove unexpected: {e}", flush=True)
+        await enqueue_message(
+            ctx.bot,
+            ctx.channel.id,
+            content="問題が発生しているようですわ。"
+        )

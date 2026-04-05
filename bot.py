@@ -1,10 +1,12 @@
 import os
 import json
-import asyncio
+import logging
 import discord
 from discord.ext import commands
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from flask import Flask
+from threading import Thread
 
 from config import SHOPPING_CHANNEL_ID, REMINDER_CHANNEL_ID
 from shopping import (
@@ -19,6 +21,10 @@ from reminder import (
     start_reminder_loop,
     handle_reminder_message,
 )
+from send_queue import MessageSenderQueue
+
+logging.basicConfig(level=logging.INFO)
+
 
 # ===== Google Sheets設定 =====
 scope = [
@@ -36,26 +42,27 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(
 client_gs = gspread.authorize(creds)
 spreadsheet = client_gs.open("Shopping_List")
 
-# 既存の買い物リストは sheet1 をそのまま使う
 shopping_sheet = spreadsheet.sheet1
-
-# リマインダー用ワークシートを作成 / 取得
 reminder_sheet = setup_reminder_sheet(spreadsheet)
 
-# ===== Discord Bot設定 =====
-intents = discord.Intents.default()
-intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
-tree = bot.tree
+# ===== Flask keep_alive =====
+app = Flask("")
 
 
-def is_shopping_channel(channel_id):
-    return channel_id == SHOPPING_CHANNEL_ID
+@app.route("/")
+def home():
+    return "Bot is running"
 
 
-def is_reminder_channel(channel_id):
-    return channel_id == REMINDER_CHANNEL_ID
+def run_web():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.daemon = True
+    t.start()
 
 
 # ===== ヘルプ系 =====
@@ -138,157 +145,197 @@ def create_reminder_help_embed():
     return embed
 
 
-def get_help_embed(channel_id):
-    if is_shopping_channel(channel_id):
-        return create_shopping_help_embed()
+def create_bot():
+    intents = discord.Intents.default()
+    intents.message_content = True
 
-    if is_reminder_channel(channel_id):
-        return create_reminder_help_embed()
+    bot = commands.Bot(command_prefix="!", intents=intents)
+    tree = bot.tree
+    bot.send_queue = None
+    bot.reminder_loop_started = False
 
-    return discord.Embed(
-        title="ヘルプ",
-        description="このチャンネルでは機能が設定されておりませんわ。",
-        color=0x999999
-    )
+    def is_shopping_channel(channel_id):
+        return channel_id == SHOPPING_CHANNEL_ID
 
+    def is_reminder_channel(channel_id):
+        return channel_id == REMINDER_CHANNEL_ID
 
-# ===== テキストコマンド =====
-@bot.command()
-async def add(ctx, *, item):
-    if not is_shopping_channel(ctx.channel.id):
-        await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
-        return
-
-    await cmd_add(ctx, shopping_sheet, item)
-
-
-@bot.command()
-async def list(ctx):
-    if not is_shopping_channel(ctx.channel.id):
-        await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
-        return
-
-    await cmd_list(ctx, shopping_sheet)
-
-
-@bot.command()
-async def done(ctx, *, item):
-    if not is_shopping_channel(ctx.channel.id):
-        await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
-        return
-
-    await cmd_done(ctx, shopping_sheet, item)
-
-
-@bot.command()
-async def remove(ctx, *, item):
-    if not is_shopping_channel(ctx.channel.id):
-        await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
-        return
-
-    await cmd_remove(ctx, shopping_sheet, item)
-
-
-# ===== スラッシュコマンド =====
-@tree.command(name="help", description="コマンドの使い方を表示します")
-async def help_command(interaction: discord.Interaction):
-    channel_id = interaction.channel.id
-    embed = get_help_embed(channel_id)
-    await interaction.response.send_message(embed=embed)
-
-
-# ===== イベント =====
-@bot.event
-async def on_ready():
-    await tree.sync()
-    print(f"ログイン完了: {bot.user}")
-    print("スラッシュコマンド同期完了")
-
-    # リマインダー監視ループ開始
-    start_reminder_loop(bot, reminder_sheet)
-
-
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-
-    content = message.content.strip()
-    channel_id = message.channel.id
-
-    print(f"ON_MESSAGE: channel={channel_id} content={content}", flush=True)
-
-    if is_shopping_channel(channel_id):
-        handled = await handle_shopping_message(message, content, shopping_sheet)
-        if handled:
-            return
-
-    elif is_reminder_channel(channel_id):
-        print("REMINDER CHANNEL MATCHED", flush=True)
-
-        handled = await handle_reminder_message(message, content, reminder_sheet)
-
-        print(f"REMINDER HANDLED: {handled}", flush=True)
-
-        if handled:
-            return
-
-    await bot.process_commands(message)
-
-
-# ===== 起動 =====
-from flask import Flask
-from threading import Thread
-import time
-
-app = Flask('')
-
-
-@app.route('/')
-def home():
-    return "Bot is running"
-
-
-def run_web():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
-
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.daemon = True
-    t.start()
-
-
-def run_bot():
-    retry_count = 0
-
-    while True:
+    async def safe_interaction_send(interaction: discord.Interaction, **kwargs):
         try:
-            print("Starting bot...", flush=True)
-            bot.run(os.environ["DISCORD_TOKEN"])
-
+            if not interaction.response.is_done():
+                await interaction.response.send_message(**kwargs)
+            else:
+                await interaction.followup.send(**kwargs)
         except discord.HTTPException as e:
             status = getattr(e, "status", None)
+            print(f"[ERROR] safe_interaction_send failed: status={status} error={e}", flush=True)
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        content="問題が発生しているようですわ。",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        content="問題が発生しているようですわ。",
+                        ephemeral=True
+                    )
+            except Exception as retry_error:
+                print(f"[ERROR] safe_interaction_send fallback failed: {retry_error}", flush=True)
 
-            print(f"[ERROR] Discord HTTPException: status={status}", flush=True)
-            print(str(e), flush=True)
+    def get_help_embed(channel_id):
+        if is_shopping_channel(channel_id):
+            return create_shopping_help_embed()
 
-            if status == 429:
-                wait_time = 120
-                print(f"[RATE LIMIT] Sleeping {wait_time}s...", flush=True)
-                time.sleep(wait_time)
-            else:
-                wait_time = 30
-                print(f"[HTTP ERROR] Sleeping {wait_time}s...", flush=True)
-                time.sleep(wait_time)
+        if is_reminder_channel(channel_id):
+            return create_reminder_help_embed()
+
+        return discord.Embed(
+            title="ヘルプ",
+            description="このチャンネルでは機能が設定されておりませんわ。",
+            color=0x999999
+        )
+
+    # ===== テキストコマンド =====
+    @bot.command()
+    async def add(ctx, *, item):
+        try:
+            if not is_shopping_channel(ctx.channel.id):
+                await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
+                return
+
+            await cmd_add(ctx, shopping_sheet, item)
 
         except Exception as e:
-            print(f"[FATAL ERROR] {e}", flush=True)
-            time.sleep(30)
+            print(f"[ERROR] add command failed: {e}", flush=True)
+            await ctx.send("処理中にエラーが発生しましたわ。")
 
-        retry_count += 1
-        print(f"[RETRY] count={retry_count}", flush=True)
+    @bot.command()
+    async def list(ctx):
+        try:
+            if not is_shopping_channel(ctx.channel.id):
+                await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
+                return
+
+            await cmd_list(ctx, shopping_sheet)
+
+        except Exception as e:
+            print(f"[ERROR] list command failed: {e}", flush=True)
+            await ctx.send("処理中にエラーが発生しましたわ。")
+
+    @bot.command()
+    async def done(ctx, *, item):
+        try:
+            if not is_shopping_channel(ctx.channel.id):
+                await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
+                return
+
+            await cmd_done(ctx, shopping_sheet, item)
+
+        except Exception as e:
+            print(f"[ERROR] done command failed: {e}", flush=True)
+            await ctx.send("処理中にエラーが発生しましたわ。")
+
+    @bot.command()
+    async def remove(ctx, *, item):
+        try:
+            if not is_shopping_channel(ctx.channel.id):
+                await ctx.send("こちらのコマンドは買い物リスト用チャンネルでお使いくださいませ。")
+                return
+
+            await cmd_remove(ctx, shopping_sheet, item)
+
+        except Exception as e:
+            print(f"[ERROR] remove command failed: {e}", flush=True)
+            await ctx.send("処理中にエラーが発生しましたわ。")
+
+    @bot.command()
+    async def queue_status(ctx):
+        try:
+            if not hasattr(bot, "send_queue") or bot.send_queue is None:
+                await ctx.send("送信キューは未初期化ですわ。")
+                return
+
+            await ctx.send(f"現在の送信キュー件数は {bot.send_queue.qsize()} 件ですわ。")
+
+        except Exception as e:
+            print(f"[ERROR] queue_status failed: {e}", flush=True)
+            await ctx.send("処理中にエラーが発生しましたわ。")
+
+    # ===== スラッシュコマンド =====
+    @tree.command(name="help", description="コマンドの使い方を表示します")
+    async def help_command(interaction: discord.Interaction):
+        try:
+            channel_id = interaction.channel.id
+            embed = get_help_embed(channel_id)
+            await safe_interaction_send(interaction, embed=embed)
+
+        except Exception as e:
+            print(f"[ERROR] help command failed: {e}", flush=True)
+            await safe_interaction_send(
+                interaction,
+                content="ヘルプ表示中にエラーが発生しましたわ。",
+                ephemeral=True
+            )
+
+    # ===== イベント =====
+    @bot.event
+    async def on_ready():
+        try:
+            await tree.sync()
+            print(f"ログイン完了: {bot.user}", flush=True)
+            print("スラッシュコマンド同期完了", flush=True)
+
+            if bot.send_queue is None:
+                bot.send_queue = MessageSenderQueue(bot, base_interval=1.2)
+                await bot.send_queue.start()
+                print("送信キューワーカー起動完了", flush=True)
+
+            if not bot.reminder_loop_started:
+                start_reminder_loop(bot, reminder_sheet)
+                bot.reminder_loop_started = True
+                print("リマインダーループ起動完了", flush=True)
+
+        except Exception as e:
+            print(f"[ERROR] on_ready failed: {e}", flush=True)
+
+    @bot.event
+    async def on_message(message):
+        try:
+            if message.author.bot:
+                return
+
+            content = message.content.strip()
+            channel_id = message.channel.id
+
+            print(f"ON_MESSAGE: channel={channel_id} content={content}", flush=True)
+
+            if is_shopping_channel(channel_id):
+                handled = await handle_shopping_message(message, content, shopping_sheet)
+                if handled:
+                    return
+
+            elif is_reminder_channel(channel_id):
+                print("REMINDER CHANNEL MATCHED", flush=True)
+
+                handled = await handle_reminder_message(message, content, reminder_sheet)
+                print(f"REMINDER HANDLED: {handled}", flush=True)
+
+                if handled:
+                    return
+
+            await bot.process_commands(message)
+
+        except discord.HTTPException as e:
+            print(f"[ERROR] on_message HTTPException: {e}", flush=True)
+
+        except Exception as e:
+            print(f"[ERROR] on_message unexpected error: {e}", flush=True)
+
+    return bot
 
 
-keep_alive()
-run_bot()
+if __name__ == "__main__":
+    keep_alive()
+    bot = create_bot()
+    bot.run(os.environ["DISCORD_TOKEN"])
