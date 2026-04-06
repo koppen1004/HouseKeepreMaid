@@ -281,7 +281,7 @@ def create_bot():
             print("スラッシュコマンド同期完了", flush=True)
 
             if bot.send_queue is None:
-                bot.send_queue = MessageSenderQueue(bot, base_interval=1.2)
+                bot.send_queue = MessageSenderQueue(bot, base_interval=2.0)
                 await bot.send_queue.start()
                 print("送信キューワーカー起動完了", flush=True)
 

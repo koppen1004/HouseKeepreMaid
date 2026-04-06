@@ -8,27 +8,35 @@ from send_queue import enqueue_message
 
 confirm_clear = {}
 
+MAX_VIEW_ITEMS = 25
+
 
 class ShoppingView(View):
-    def __init__(self, sheet, create_embed_func):
+    def __init__(self, sheet, create_embed_func, max_items: int = MAX_VIEW_ITEMS):
         super().__init__(timeout=None)
         self.sheet = sheet
         self.create_embed_func = create_embed_func
+        self.max_items = max_items
         self.build()
 
     def build(self):
         self.clear_items()
         data = self.sheet.get_all_values()
 
+        added = 0
+
         for i, row in enumerate(data[1:], start=2):
             if len(row) < 4:
                 continue
+
+            if added >= self.max_items:
+                break
 
             item = row[2]
             status = row[3]
 
             button = Button(
-                label=item,
+                label=item[:80],
                 style=ButtonStyle.success if status == "済" else ButtonStyle.secondary
             )
 
@@ -38,8 +46,8 @@ class ShoppingView(View):
                     new_status = "未購入" if current == "済" else "済"
                     self.sheet.update_cell(row, 4, new_status)
 
-                    embed = self.create_embed_func(self.sheet)
-                    view = ShoppingView(self.sheet, self.create_embed_func)
+                    embed = self.create_embed_func(self.sheet, self.max_items)
+                    view = ShoppingView(self.sheet, self.create_embed_func, self.max_items)
 
                     await interaction.response.edit_message(embed=embed, view=view)
 
@@ -91,9 +99,10 @@ class ShoppingView(View):
 
             button.callback = callback
             self.add_item(button)
+            added += 1
 
 
-def create_embed(sheet):
+def create_embed(sheet, max_items: int = MAX_VIEW_ITEMS):
     data = sheet.get_all_values()
 
     embed = discord.Embed(
@@ -116,17 +125,24 @@ def create_embed(sheet):
         else:
             not_done.append(f"❌ {item}")
 
+    not_done_display = not_done[:max_items]
+    done_display = done[:max_items]
+
     embed.add_field(
         name=f"🛍 未購入（{len(not_done)}）",
-        value="\n".join(not_done) if not_done else "なし",
+        value="\n".join(not_done_display) if not_done_display else "なし",
         inline=False
     )
 
     embed.add_field(
         name=f"✅ 購入済み（{len(done)}）",
-        value="\n".join(done) if done else "なし",
+        value="\n".join(done_display) if done_display else "なし",
         inline=False
     )
+
+    total_items = len(not_done) + len(done)
+    if total_items > max_items:
+        embed.set_footer(text=f"表示負荷軽減のため先頭 {max_items} 件まで表示しておりますわ。")
 
     return embed
 
@@ -140,7 +156,8 @@ async def handle_shopping_message(bot, message, content, sheet):
             await enqueue_message(
                 bot,
                 message.channel.id,
-                content="⚠️ 本当に削除いたしますの？「はい」で実行いたしますわ。"
+                content="⚠️ 本当に削除いたしますの？「はい」で実行いたしますわ。",
+                metadata={"feature": "shopping", "action": "confirm_clear"},
             )
             return True
 
@@ -150,7 +167,8 @@ async def handle_shopping_message(bot, message, content, sheet):
             await enqueue_message(
                 bot,
                 message.channel.id,
-                content="🧹 注文予定は白紙にいたしましたわ。"
+                content="🧹 注文予定は白紙にいたしましたわ。",
+                metadata={"feature": "shopping", "action": "clear_all"},
             )
             return True
 
@@ -176,13 +194,15 @@ async def handle_shopping_message(bot, message, content, sheet):
                 await enqueue_message(
                     bot,
                     message.channel.id,
-                    content=f"{item} を追加いたしましたわ。"
+                    content=f"{item} を追加いたしましたわ。",
+                    metadata={"feature": "shopping", "action": "add_item", "item": item},
                 )
             else:
                 await enqueue_message(
                     bot,
                     message.channel.id,
-                    content="追加する品をお書きくださいませ。"
+                    content="追加する品をお書きくださいませ。",
+                    metadata={"feature": "shopping", "action": "add_item_empty"},
                 )
 
             return True
@@ -194,12 +214,13 @@ async def handle_shopping_message(bot, message, content, sheet):
                 await enqueue_message(
                     bot,
                     message.channel.id,
-                    content="注文予定は何もないようですわね。"
+                    content="注文予定は何もないようですわね。",
+                    metadata={"feature": "shopping", "action": "show_list_empty"},
                 )
                 return True
 
-            embed = create_embed(sheet)
-            view = ShoppingView(sheet, create_embed)
+            embed = create_embed(sheet, MAX_VIEW_ITEMS)
+            view = ShoppingView(sheet, create_embed, MAX_VIEW_ITEMS)
             await enqueue_message(
                 bot,
                 message.channel.id,
@@ -223,14 +244,16 @@ async def handle_shopping_message(bot, message, content, sheet):
                     await enqueue_message(
                         bot,
                         message.channel.id,
-                        content=f"{item} は注文予定から外しておきますわね。"
+                        content=f"{item} は注文予定から外しておきますわね。",
+                        metadata={"feature": "shopping", "action": "remove_item", "item": item},
                     )
                     return True
 
             await enqueue_message(
                 bot,
                 message.channel.id,
-                content="そちらは注文予定にはないようですわ。"
+                content="そちらは注文予定にはないようですわ。",
+                metadata={"feature": "shopping", "action": "remove_item_not_found", "item": item},
             )
             return True
 
@@ -248,14 +271,16 @@ async def handle_shopping_message(bot, message, content, sheet):
                     await enqueue_message(
                         bot,
                         message.channel.id,
-                        content=f"{item} を注文いたしましたわ。"
+                        content=f"{item} を注文いたしましたわ。",
+                        metadata={"feature": "shopping", "action": "mark_done", "item": item},
                     )
                     return True
 
             await enqueue_message(
                 bot,
                 message.channel.id,
-                content="そちらは注文予定にはないようですわ。"
+                content="そちらは注文予定にはないようですわ。",
+                metadata={"feature": "shopping", "action": "mark_done_not_found", "item": item},
             )
             return True
 
@@ -273,14 +298,16 @@ async def handle_shopping_message(bot, message, content, sheet):
                     await enqueue_message(
                         bot,
                         message.channel.id,
-                        content=f"{item} を注文いたしましたわ。"
+                        content=f"{item} を注文いたしましたわ。",
+                        metadata={"feature": "shopping", "action": "mark_done_short", "item": item},
                     )
                     return True
 
             await enqueue_message(
                 bot,
                 message.channel.id,
-                content="そちらは注文予定にはないようですわ。"
+                content="そちらは注文予定にはないようですわ。",
+                metadata={"feature": "shopping", "action": "mark_done_short_not_found", "item": item},
             )
             return True
 
@@ -294,13 +321,15 @@ async def handle_shopping_message(bot, message, content, sheet):
             await enqueue_message(
                 bot,
                 message.channel.id,
-                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。",
+                metadata={"feature": "shopping", "action": "http_429"},
             )
         else:
             await enqueue_message(
                 bot,
                 message.channel.id,
-                content="問題が発生しているようですわ。"
+                content="問題が発生しているようですわ。",
+                metadata={"feature": "shopping", "action": "http_error", "status": status},
             )
         return True
 
@@ -310,7 +339,8 @@ async def handle_shopping_message(bot, message, content, sheet):
             await enqueue_message(
                 bot,
                 message.channel.id,
-                content="問題が発生しているようですわ。"
+                content="問題が発生しているようですわ。",
+                metadata={"feature": "shopping", "action": "unexpected_error"},
             )
         except Exception as enqueue_error:
             print(f"[ERROR] handle_shopping_message enqueue failed: {enqueue_error}", flush=True)
@@ -326,7 +356,8 @@ async def cmd_add(ctx, sheet, item):
         await enqueue_message(
             ctx.bot,
             ctx.channel.id,
-            content=f"商品を追加いたしましたわ：{item}"
+            content=f"商品を追加いたしましたわ：{item}",
+            metadata={"feature": "shopping", "action": "cmd_add", "item": item},
         )
 
     except discord.HTTPException as e:
@@ -337,13 +368,15 @@ async def cmd_add(ctx, sheet, item):
             await enqueue_message(
                 ctx.bot,
                 ctx.channel.id,
-                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。",
+                metadata={"feature": "shopping", "action": "cmd_add_429"},
             )
         else:
             await enqueue_message(
                 ctx.bot,
                 ctx.channel.id,
-                content="問題が発生しているようですわ。"
+                content="問題が発生しているようですわ。",
+                metadata={"feature": "shopping", "action": "cmd_add_http_error", "status": status},
             )
 
     except Exception as e:
@@ -351,7 +384,8 @@ async def cmd_add(ctx, sheet, item):
         await enqueue_message(
             ctx.bot,
             ctx.channel.id,
-            content="問題が発生しているようですわ。"
+            content="問題が発生しているようですわ。",
+            metadata={"feature": "shopping", "action": "cmd_add_unexpected_error"},
         )
 
 
@@ -363,12 +397,13 @@ async def cmd_list(ctx, sheet):
             await enqueue_message(
                 ctx.bot,
                 ctx.channel.id,
-                content="何も入っておりません。"
+                content="何も入っておりません。",
+                metadata={"feature": "shopping", "action": "cmd_list_empty"},
             )
             return
 
-        embed = create_embed(sheet)
-        view = ShoppingView(sheet, create_embed)
+        embed = create_embed(sheet, MAX_VIEW_ITEMS)
+        view = ShoppingView(sheet, create_embed, MAX_VIEW_ITEMS)
         await enqueue_message(
             ctx.bot,
             ctx.channel.id,
@@ -385,13 +420,15 @@ async def cmd_list(ctx, sheet):
             await enqueue_message(
                 ctx.bot,
                 ctx.channel.id,
-                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。",
+                metadata={"feature": "shopping", "action": "cmd_list_429"},
             )
         else:
             await enqueue_message(
                 ctx.bot,
                 ctx.channel.id,
-                content="問題が発生しているようですわ。"
+                content="問題が発生しているようですわ。",
+                metadata={"feature": "shopping", "action": "cmd_list_http_error", "status": status},
             )
 
     except Exception as e:
@@ -399,7 +436,8 @@ async def cmd_list(ctx, sheet):
         await enqueue_message(
             ctx.bot,
             ctx.channel.id,
-            content="問題が発生しているようですわ。"
+            content="問題が発生しているようですわ。",
+            metadata={"feature": "shopping", "action": "cmd_list_unexpected_error"},
         )
 
 
@@ -418,14 +456,16 @@ async def cmd_done(ctx, sheet, item):
                 await enqueue_message(
                     ctx.bot,
                     ctx.channel.id,
-                    content=f"{item} を注文いたしましたわ。"
+                    content=f"{item} を注文いたしましたわ。",
+                    metadata={"feature": "shopping", "action": "cmd_done", "item": item},
                 )
                 return
 
         await enqueue_message(
             ctx.bot,
             ctx.channel.id,
-            content="そちらは注文予定にはないようですわ。"
+            content="そちらは注文予定にはないようですわ。",
+            metadata={"feature": "shopping", "action": "cmd_done_not_found", "item": item},
         )
 
     except discord.HTTPException as e:
@@ -436,13 +476,15 @@ async def cmd_done(ctx, sheet, item):
             await enqueue_message(
                 ctx.bot,
                 ctx.channel.id,
-                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。",
+                metadata={"feature": "shopping", "action": "cmd_done_429"},
             )
         else:
             await enqueue_message(
                 ctx.bot,
                 ctx.channel.id,
-                content="問題が発生しているようですわ。"
+                content="問題が発生しているようですわ。",
+                metadata={"feature": "shopping", "action": "cmd_done_http_error", "status": status},
             )
 
     except Exception as e:
@@ -450,7 +492,8 @@ async def cmd_done(ctx, sheet, item):
         await enqueue_message(
             ctx.bot,
             ctx.channel.id,
-            content="問題が発生しているようですわ。"
+            content="問題が発生しているようですわ。",
+            metadata={"feature": "shopping", "action": "cmd_done_unexpected_error"},
         )
 
 
@@ -469,14 +512,16 @@ async def cmd_remove(ctx, sheet, item):
                 await enqueue_message(
                     ctx.bot,
                     ctx.channel.id,
-                    content=f"{item} は注文予定から外しておきますわね。"
+                    content=f"{item} は注文予定から外しておきますわね。",
+                    metadata={"feature": "shopping", "action": "cmd_remove", "item": item},
                 )
                 return
 
         await enqueue_message(
             ctx.bot,
             ctx.channel.id,
-            content="そちらは注文予定にはないようですわ。"
+            content="そちらは注文予定にはないようですわ。",
+            metadata={"feature": "shopping", "action": "cmd_remove_not_found", "item": item},
         )
 
     except discord.HTTPException as e:
@@ -487,13 +532,15 @@ async def cmd_remove(ctx, sheet, item):
             await enqueue_message(
                 ctx.bot,
                 ctx.channel.id,
-                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。"
+                content="ただいま手が塞がっておりまして…少々時間を開けてからもう一度お願いいたしますわ。",
+                metadata={"feature": "shopping", "action": "cmd_remove_429"},
             )
         else:
             await enqueue_message(
                 ctx.bot,
                 ctx.channel.id,
-                content="問題が発生しているようですわ。"
+                content="問題が発生しているようですわ。",
+                metadata={"feature": "shopping", "action": "cmd_remove_http_error", "status": status},
             )
 
     except Exception as e:
@@ -501,5 +548,6 @@ async def cmd_remove(ctx, sheet, item):
         await enqueue_message(
             ctx.bot,
             ctx.channel.id,
-            content="問題が発生しているようですわ。"
+            content="問題が発生しているようですわ。",
+            metadata={"feature": "shopping", "action": "cmd_remove_unexpected_error"},
         )

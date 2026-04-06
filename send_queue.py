@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Optional, Any
 
@@ -21,12 +22,13 @@ class SendTask:
 
 
 class MessageSenderQueue:
-    def __init__(self, bot: discord.Client, base_interval: float = 1.2):
+    def __init__(self, bot: discord.Client, base_interval: float = 1.5):
         self.bot = bot
         self.queue: asyncio.Queue[SendTask] = asyncio.Queue()
         self.base_interval = base_interval
         self.worker_task: Optional[asyncio.Task] = None
         self.running = False
+        self.pause_until = 0.0
 
     async def start(self):
         if self.running:
@@ -73,13 +75,22 @@ class MessageSenderQueue:
 
     async def _worker_loop(self):
         while self.running:
+            now = time.monotonic()
+            if self.pause_until > now:
+                sleep_time = self.pause_until - now
+                logger.warning(f"Queue paused for {sleep_time:.2f}s due to rate limit.")
+                await asyncio.sleep(sleep_time)
+
             task = await self.queue.get()
+
             try:
                 if task.delay_before_send > 0:
                     await asyncio.sleep(task.delay_before_send)
 
-                await self._send_with_retry(task)
-                await asyncio.sleep(self.base_interval)
+                success = await self._send_with_retry(task)
+
+                if success:
+                    await asyncio.sleep(self.base_interval)
 
             except asyncio.CancelledError:
                 raise
@@ -89,7 +100,7 @@ class MessageSenderQueue:
             finally:
                 self.queue.task_done()
 
-    async def _send_with_retry(self, task: SendTask):
+    async def _send_with_retry(self, task: SendTask) -> bool:
         channel = self.bot.get_channel(task.channel_id)
 
         if channel is None:
@@ -99,7 +110,7 @@ class MessageSenderQueue:
                 logger.warning(
                     f"Channel fetch failed: channel_id={task.channel_id}, error={e}"
                 )
-                return
+                return False
 
         for attempt in range(task.max_retries + 1):
             try:
@@ -112,7 +123,7 @@ class MessageSenderQueue:
                 logger.info(
                     f"Message sent: channel_id={task.channel_id}, metadata={task.metadata}"
                 )
-                return
+                return True
 
             except discord.HTTPException as e:
                 status = getattr(e, "status", None)
@@ -122,13 +133,23 @@ class MessageSenderQueue:
                     if retry_after is None:
                         retry_after = 5
 
-                    wait_time = float(retry_after) + 1.0
+                    wait_time = float(retry_after) + 2.0
+                    self.pause_until = max(self.pause_until, time.monotonic() + wait_time)
+
                     logger.warning(
-                        f"Rate limited (429). Waiting {wait_time:.2f}s. "
-                        f"channel_id={task.channel_id}, attempt={attempt + 1}"
+                        f"Rate limited (429). Pausing queue for {wait_time:.2f}s. "
+                        f"channel_id={task.channel_id}, attempt={attempt + 1}, metadata={task.metadata}"
                     )
-                    await asyncio.sleep(wait_time)
-                    continue
+
+                    if attempt < task.max_retries:
+                        await asyncio.sleep(wait_time)
+                        continue
+
+                    logger.error(
+                        f"Message dropped after repeated 429s: "
+                        f"channel_id={task.channel_id}, metadata={task.metadata}"
+                    )
+                    return False
 
                 if status in (500, 502, 503, 504) and attempt < task.max_retries:
                     wait_time = min(2 ** attempt, 30)
@@ -143,13 +164,13 @@ class MessageSenderQueue:
                     f"HTTPException while sending: status={status}, "
                     f"channel_id={task.channel_id}, metadata={task.metadata}"
                 )
-                return
+                return False
 
             except (discord.Forbidden, discord.NotFound) as e:
                 logger.warning(
                     f"Cannot send message: channel_id={task.channel_id}, error={e}"
                 )
-                return
+                return False
 
             except asyncio.TimeoutError:
                 if attempt < task.max_retries:
@@ -164,7 +185,7 @@ class MessageSenderQueue:
                 logger.exception(
                     f"Timeout exceeded retries: channel_id={task.channel_id}, metadata={task.metadata}"
                 )
-                return
+                return False
 
             except Exception as e:
                 if attempt < task.max_retries:
@@ -180,7 +201,12 @@ class MessageSenderQueue:
                     f"Send failed after retries: channel_id={task.channel_id}, "
                     f"metadata={task.metadata}, error={e}"
                 )
-                return
+                return False
+
+        logger.error(
+            f"Message failed after retry loop ended: channel_id={task.channel_id}, metadata={task.metadata}"
+        )
+        return False
 
 
 async def enqueue_message(
